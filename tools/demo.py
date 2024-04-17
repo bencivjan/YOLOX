@@ -16,6 +16,24 @@ from yolox.data.datasets import COCO_CLASSES
 from yolox.exp import get_exp
 from yolox.utils import fuse_model, get_model_info, postprocess, vis
 
+import time
+from functools import partial
+import json
+
+## Define hook functions
+take_time_dict = {}
+time_sum_dict = {}
+
+def take_time_pre(layer_name,module, input):
+    take_time_dict[layer_name] = time.time()
+
+def take_time(layer_name,module, input, output):
+    take_time_dict[layer_name] =  time.time() - take_time_dict[layer_name]
+    # if layer_name in time_sum_dict:
+    #     time_sum_dict[layer_name] += take_time_dict[layer_name]
+    # else:
+        # time_sum_dict[layer_name] = take_time_dict[layer_name]
+
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
 
 
@@ -192,6 +210,17 @@ def image_demo(predictor, vis_folder, path, current_time, save_result):
     files.sort()
     for image_name in files:
         outputs, img_info = predictor.inference(image_name)
+
+        # Save layer time values for each run
+        for key, value in take_time_dict.items():
+            if key in time_sum_dict:
+                # print(f"Before: {time_sum_dict[key]}")
+                time_sum_dict[key] += value
+                # print(f"After: {time_sum_dict[key]}")
+            else:
+                time_sum_dict[key] = 0#value
+        
+        
         result_image = predictor.visual(outputs[0], img_info, predictor.confthre)
         if save_result:
             save_folder = os.path.join(
@@ -266,6 +295,13 @@ def main(exp, args):
         exp.test_size = (args.tsize, args.tsize)
 
     model = exp.get_model()
+
+    # Define hooks here
+    # Register function for every layer
+    for name, layer in model.named_modules():
+        layer.register_forward_pre_hook( partial(take_time_pre, name) )
+        layer.register_forward_hook( partial(take_time, name) )
+
     logger.info("Model Summary: {}".format(get_model_info(model, exp.test_size)))
 
     if args.device == "gpu":
@@ -311,6 +347,12 @@ def main(exp, args):
         image_demo(predictor, vis_folder, args.path, current_time, args.save_result)
     elif args.demo == "video" or args.demo == "webcam":
         imageflow_demo(predictor, vis_folder, current_time, args)
+    
+    # Print layer times
+    with open(args.experiment_name + '_layer_benchmarks_remove_first.txt', 'w') as f:
+        f.write(f'Layer latency measurements:\n')
+        for key, val in time_sum_dict.items():
+            f.write(f'{key}: {val}\n')
 
 
 if __name__ == "__main__":
